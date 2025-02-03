@@ -2,7 +2,8 @@ require 'oj'
 require 'multi_json'
 require 'digest'
 require 'ostruct'
-
+require 'benchmark'
+require 'active_support/cache'
 ##
 # This monkeypatch makes OpenStruct act like Struct objects
 class OpenStruct
@@ -19,6 +20,7 @@ class OpenStruct
   def length
     @table.keys.length
   end
+
   alias :size :length
 
   def to_a
@@ -37,7 +39,9 @@ end
 module LinkedData
   module Client
     module HTTP
-      class Link < String; attr_accessor :media_type; end
+      class Link < String
+        attr_accessor :media_type;
+      end
 
       def self.conn
         unless LinkedData::Client.connection_configured?
@@ -45,28 +49,35 @@ module LinkedData
             rails = Kernel.const_get("Rails")
             store = rails.cache if rails.cache
           end
-          LinkedData::Client.config_connection(cache_store: store)
+          LinkedData::Client.config_connection(cache_store: store || ActiveSupport::Cache::MemoryStore.new)
         end
         LinkedData::Client.settings.conn
+      end
+
+      def self.federated_conn
+        LinkedData::Client.settings.federated_conn
       end
 
       def self.get(path, params = {}, options = {})
         headers = options[:headers] || {}
         raw = options[:raw] || false # return the unparsed body of the request
-        params = params.delete_if {|k,v| v == nil || v.to_s.empty?}
+        params = params.delete_if { |k, v| v == nil || v.to_s.empty? }
         params[:ncbo_cache_buster] = Time.now.to_f if raw # raw requests don't get cached to ensure body is available
-        invalidate_cache = params.delete(:invalidate_cache) || false
-
+        invalidate_cache = params.delete(:invalidate_cache) || $API_CLIENT_INVALIDATE_CACHE || false
+        connection = options[:connection] || conn
         begin
-          puts "Getting: #{path} with #{params}" if $DEBUG
           begin
-            response = conn.get do |req|
-              req.url path
-              req.params = params.dup
-              req.options[:timeout] = 60
-              req.headers.merge(headers)
-              req.headers[:invalidate_cache] = invalidate_cache
+            response = nil
+            time = Benchmark.realtime do
+              response = connection.get do |req|
+                req.url path
+                req.params = params.dup
+                req.options[:timeout] = 60
+                req.headers.merge(headers)
+                req.headers[:invalidate_cache] = invalidate_cache
+              end
             end
+            puts "Getting: #{path} with #{params} (t: #{time}s - cache: #{response.headers["X-Rack-Cache"]})" if $DEBUG_API_CLIENT
           rescue Exception => e
             params = Faraday::Utils.build_query(params)
             path << "?" unless params.empty? || path.include?("?")
@@ -83,8 +94,8 @@ module LinkedData
           else
             obj = recursive_struct(load_json(response.body))
           end
-        rescue Exception => e
-          puts "Problem getting #{path}" if $DEBUG
+        rescue StandardError => e
+          puts "Problem getting #{path}" if $DEBUG_API_CLIENT
           raise e
         end
         obj
@@ -94,12 +105,12 @@ module LinkedData
         responses = []
         if conn.in_parallel?
           conn.in_parallel do
-            paths.each {|p| responses << conn.get(p, params) }
+            paths.each { |p| responses << conn.get(p, params) }
           end
         else
           responses = threaded_request(paths, params)
         end
-        return responses
+        responses
       end
 
       def self.post(path, obj, options = {})
@@ -108,11 +119,12 @@ module LinkedData
           req.url path
           custom_req(obj, file, file_attribute, req)
         end
-        raise Exception, response.body if response.status >= 500
+        raise StandardError, response.body if response.status >= 500
+
         if options[:raw] || false # return the unparsed body of the request
-          return response.body
+          response.body
         else
-          return recursive_struct(load_json(response.body))
+          recursive_struct(load_json(response.body))
         end
       end
 
@@ -122,7 +134,8 @@ module LinkedData
           req.url path
           custom_req(obj, file, file_attribute, req)
         end
-        raise Exception, response.body if response.status >= 500
+        raise StandardError, response.body if response.status >= 500
+
         recursive_struct(load_json(response.body))
       end
 
@@ -132,13 +145,17 @@ module LinkedData
           req.url path
           custom_req(obj, file, file_attribute, req)
         end
-        raise Exception, response.body if response.status >= 500
+        raise StandardError, response.body if response.status >= 500
+
+        response
       end
 
       def self.delete(id)
-        puts "Deleting #{id}" if $DEBUG
+        puts "Deleting #{id}" if $DEBUG_API_CLIENT
         response = conn.delete id
-        raise Exception, response.body if response.status >= 500
+        raise StandardError, response.body if response.status >= 500
+
+        response
       end
 
       def self.object_from_json(json)
@@ -170,9 +187,11 @@ module LinkedData
 
       def self.params_file_handler(params)
         return if params.nil?
+
         file, return_attribute = nil, nil
         params.dup.each do |attribute, value|
           next unless value.is_a?(File) || value.is_a?(Tempfile) || value.is_a?(ActionDispatch::Http::UploadedFile)
+
           filename = value.original_filename
           file = Faraday::UploadIO.new(value.path, "text/plain", filename)
           return_attribute = attribute
@@ -203,7 +222,7 @@ module LinkedData
           context = json_obj.delete("@context") # strip context
 
           # Create a struct with the left-over attributes to store data
-          attributes = json_obj.keys.map {|k| k.to_sym}
+          attributes = json_obj.keys.map { |k| k.to_sym }
           attributes_always_present = value_cls.attrs_always_present || [] rescue []
           attributes = (attributes + attributes_always_present).uniq
 
@@ -233,7 +252,7 @@ module LinkedData
             end
           else
             # Get the struct class
-            recursive_obj_hash = {links: nil, context: nil}
+            recursive_obj_hash = { links: nil, context: nil }
             json_obj.each do |key, value|
               recursive_obj_hash[key] = recursive_struct(value)
             end
@@ -260,6 +279,7 @@ module LinkedData
 
         context = links.delete("@context")
         return if context.nil?
+
         links.keys.each do |link_type|
           link = Link.new(links[link_type])
           link.media_type = context[link_type]
@@ -270,6 +290,7 @@ module LinkedData
 
       def self.load_json(json)
         return if json.nil? || json.empty?
+
         begin
           MultiJson.load(json)
         rescue Exception => e

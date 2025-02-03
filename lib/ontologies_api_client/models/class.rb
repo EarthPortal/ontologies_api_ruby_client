@@ -1,26 +1,28 @@
-require "uri"
+require "cgi"
 require_relative "../base"
+require_relative "../request_federation"
 
 module LinkedData
   module Client
     module Models
+
       class Class < LinkedData::Client::Base
         HTTP = LinkedData::Client::HTTP
-        @media_type = "http://www.w3.org/2002/07/owl#Class"
-        @include_attrs = "prefLabel,definition,synonym,obsolete,hasChildren"
-        @include_attrs_full = "prefLabel,definition,synonym,obsolete,properties,hasChildren,children"
-        @attrs_always_present = :prefLabel, :definition, :synonym, :obsolete, :properties, :hasChildren, :children
-
+        include LinkedData::Client::RequestFederation
+        @media_type = %w[http://www.w3.org/2002/07/owl#Class http://www.w3.org/2004/02/skos/core#Concept]
+        @include_attrs = "prefLabel,definition,synonym,obsolete,hasChildren,inScheme,memberOf"
+        @include_attrs_full = "prefLabel,definition,synonym,obsolete,properties,hasChildren,childre,inScheme,memberOf"
+        @attrs_always_present = :prefLabel, :definition, :synonym, :obsolete, :properties, :hasChildren, :children, :inScheme, :memberOf
         alias :fullId :id
 
         # triple store predicate is <http://www.w3.org/2002/07/owl#deprecated>
         def obsolete?
-          self.obsolete
+          self.obsolete && self.obsolete.to_s.eql?("true")
         end
 
         def prefLabel(options = {})
           if options[:use_html]
-            if self.obsolete
+            if obsolete?
               return "<span class='obsolete_class' title='obsolete class'>#{@prefLabel}</span>"
             else
               return "<span class='prefLabel'>#{@prefLabel}</span>"
@@ -48,7 +50,7 @@ module LinkedData
           return "" if self.links.nil?
           return self.id if self.id.include?("purl.")
           ont = self.explore.ontology
-          "#{LinkedData::Client.settings.purl_prefix}/#{ont.acronym}?conceptid=#{URI.escape(self.id, Regexp.new("[^#{URI::PATTERN::UNRESERVED}]"))}"
+          "#{LinkedData::Client.settings.purl_prefix}/#{ont.acronym}?conceptid=#{CGI.escape(self.id)}"
         end
 
         def ontology
@@ -57,15 +59,32 @@ module LinkedData
 
         def self.find(id, ontology, params = {})
           ontology = HTTP.get(ontology, params)
-          ontology.explore.class(URI.escape(id, Regexp.new("[^#{URI::PATTERN::UNRESERVED}]")))
+          ontology.explore.class(CGI.escape(id))
         end
 
         def self.search(*args)
           query = args.shift
+
           params = args.shift || {}
+
           params[:q] = query
+
           raise ArgumentError, "You must provide a search query: Class.search(query: 'melanoma')" if query.nil? || !query.is_a?(String)
-          HTTP.post("/search", params)
+
+
+          search_result = federated_get(params) do |url|
+            "#{url}/search"
+          end
+          merged_collections = {collection: [], errors: []}
+          search_result.each do |result|
+            if result.collection
+              merged_collections[:collection].concat(result.collection)
+            elsif result.errors
+              merged_collections[:errors] << result.errors
+            end
+          end
+          OpenStruct.new(merged_collections)
+
         end
 
         def expanded?

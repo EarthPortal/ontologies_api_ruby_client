@@ -1,11 +1,15 @@
 require_relative 'config'
 require_relative 'http'
+require_relative 'request_federation'
+require 'parallel'
 
 module LinkedData
   module Client
     module Collection
 
+
       def self.included(base)
+        base.include LinkedData::Client::RequestFederation
         base.extend(ClassMethods)
       end
 
@@ -24,8 +28,8 @@ module LinkedData
 
         ##
         # Get all top-level links for the API
-        def top_level_links
-          HTTP.get(LinkedData::Client.settings.rest_url)
+        def top_level_links(link = LinkedData::Client.settings.rest_url)
+          HTTP.get(link)
         end
 
         ##
@@ -36,11 +40,14 @@ module LinkedData
           end
         end
 
+
         ##
         # Get the first collection of resources for a given type
         def entry_point(media_type, params = {})
-          params = {include: @include_attrs}.merge(params)
-          HTTP.get(uri_from_context(top_level_links, media_type), params)
+          params = { include: @include_attrs, display_links: false, display_context: false}.merge(params)
+          federated_get(params) do |url|
+            uri_from_context(top_level_links(url), media_type) rescue nil
+          end
         end
 
         ##
@@ -75,16 +82,16 @@ module LinkedData
 
         ##
         # Find a resource by id
+        # @deprecated replace with "get"
         def find(id, params = {})
-          found = where do |obj|
-            obj.id.eql?(id)
-          end
-          found.first
+          get(id, params)
         end
 
         ##
         # Get a resource by id (this will retrieve it from the REST service)
         def get(id, params = {})
+          path = collection_path
+          id = "#{path}/#{id}" unless id.include?(path)
           HTTP.get(id, params)
         end
 
