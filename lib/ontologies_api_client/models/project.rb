@@ -7,7 +7,7 @@ module LinkedData
         include LinkedData::Client::Collection
         include LinkedData::Client::ReadWrite
 
-        @media_type = "http://data.bioontology.org/metadata/Project"
+        @media_type = "https://schema.org/ResearchProject"
       end
     end
   end
