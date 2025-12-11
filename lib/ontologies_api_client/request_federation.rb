@@ -29,10 +29,17 @@ module LinkedData
             main_thread_locals.each { |key, value| Thread.current[key] = value }
             begin
               portal_params = params[portal_name.to_s.downcase] || params
-              HTTP.get(link.call(conn.url_prefix.to_s.chomp('/')), portal_params, connection: conn)
+              result = HTTP.get(link.call(conn.url_prefix.to_s.chomp('/')), portal_params, connection: conn)
+
+              unless internal_call?(conn)
+                Rails.cache.write("federation_portal_up_#{portal_name}", true, expires_in: 30.minutes)
+                HTTP.log("Federation SUCCESS for #{portal_name} - cached as UP for 30 minutes")
+              end
+
+              result
             rescue Exception => e
-              HTTP.log("Error in federation #{portal_name} is down status cached for 10 minutes")
-              Rails.cache.write("federation_portal_up_#{portal_name}", false, expires_in: 10.minutes) unless internal_call?(conn)
+              HTTP.log("Federation FAILURE for #{portal_name}: #{e.class.name} - #{e.message}")
+              HTTP.log("Federation #{portal_name} failure NOT cached - will retry immediately on next request")
               [OpenStruct.new(errors: "Problem retrieving #{link.call(conn.url_prefix.to_s.chomp('/')) || conn.url_prefix}")]
             end
           end
