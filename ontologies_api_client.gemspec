@@ -16,6 +16,7 @@ Gem::Specification.new do |gem|
   gem.add_dependency('excon','0.112.0')
   gem.add_dependency('faraday')
   gem.add_dependency('faraday-excon', '~> 2.0.0')
+  gem.add_dependency('faraday-follow_redirects')
   gem.add_dependency('faraday-multipart')
   gem.add_dependency('lz4-ruby')
   gem.add_dependency('multi_json')

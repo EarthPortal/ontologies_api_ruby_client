@@ -40,7 +40,7 @@ module LinkedData
             rescue Exception => e
               HTTP.log("Federation FAILURE for #{portal_name}: #{e.class.name} - #{e.message}")
               HTTP.log("Federation #{portal_name} failure NOT cached - will retry immediately on next request")
-              [OpenStruct.new(errors: "Problem retrieving #{link.call(conn.url_prefix.to_s.chomp('/')) || conn.url_prefix}")]
+              [OpenStruct.new(errors: "Problem retrieving #{conn.url_prefix}")]
             end
           end
 
