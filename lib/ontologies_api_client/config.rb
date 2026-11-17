@@ -83,6 +83,8 @@ module LinkedData
 
         faraday.request :multipart
         faraday.request :url_encoded
+        require 'faraday/follow_redirects'
+        faraday.response :follow_redirects
         faraday.adapter :excon
         faraday.headers = {
           "Accept" => "application/json",
